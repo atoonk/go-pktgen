@@ -65,6 +65,17 @@ Flags:
 Note that pktgen requires root privileges to run, as it needs to access raw sockets and network interfaces. 
 It also checks that the number of streams is less than or equal to the number of available TX queues on the specified interface.
 
+*example*
+packet generator sending UDP packets using `af_packet`
+```
+./go-pktgen --dstip 192.168.64.2 --method af_packet --duration 5 --payloadsize 1200 --streams 1  --iface veth0
+```
+
+packet generator sending UDP packets using `af_xdp`
+```
+./go-pktgen --dstip 192.168.64.2 --method af_xdp --duration 5 --payloadsize 1200 --streams 1  --iface veth0
+```
+
 ## Benchmarking
 To compare the performance of different packet sending methods, use the benchmark method:
 
