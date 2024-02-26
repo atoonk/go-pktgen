@@ -4,19 +4,19 @@ The Go Packet Generator (`go-pktgen`) is a tool designed for network performance
 
 ## Goal
 The primary goal of `go-pktgen` is to showcase different packet generation techniques in Go and to facilitate performance comparisons among these methods under various conditions. 
-Below is an example benchmark result comparing the performance of different packet sending methods:
+Below is an example benchmark result comparing the performance of different packet-sending methods:
 
 ```
-./go-pktgen --dstip 192.168.64.2 --method benchmark --duration 5 --payloadsize 64 --streams 2 --iface veth0
+./go-pktgen --dstip 192.168.64.2 --method benchmark --duration 5 --payloadsize 64 --iface veth0
 +-------------+-----------+------+
 |   Method    | Packets/s | Mb/s |
 +-------------+-----------+------+
-| af_xdp      |   5191321 | 2657 |
-| af_packet   |   2644950 | 1354 |
-| af_pcap     |   2229470 | 1141 |
-| udp_syscall |   1646761 |  843 |
-| raw_socket  |   1571420 |  804 |
-| net_conn    |   1480660 |  758 |
+| af_xdp      |   2647936 | 1355 |
+| af_packet   |   1368070 |  700 |
+| af_pcap     |   1354087 |  693 |
+| udp_syscall |    861372 |  441 |
+| raw_socket  |    793781 |  406 |
+| net_conn    |    697277 |  357 |
 +-------------+-----------+------+
 ```
 
@@ -25,6 +25,8 @@ Below is an example benchmark result comparing the performance of different pack
 
 ### Prerequisites
 This tool is designed to run on Linux. Running on other platforms will not work for certain packet sending methods like `AF_PACKET` and `AF_XDP`. 
+you need libpcap-dev and build-essential
+`sudo apt-get install build-essential libpcap-dev`
 
 ### Compilation
 Note this tool for now only works on Linux. 
@@ -67,9 +69,32 @@ It also checks that the number of streams is less than or equal to the number of
 To compare the performance of different packet sending methods, use the benchmark method:
 
 ```
-./go-pktgen --dstip 192.168.64.2 --method benchmark --duration 5 --payloadsize 64 --streams 2 --iface veth0
+./go-pktgen --dstip 192.168.64.2 --method benchmark --duration 5 --payloadsize 64 --streams 1 --iface veth0
 ```
 This will run a series of tests using all available methods and print the results in terms of packets per second and Mbps.
+
+## Multiple streams
+To use multiple streams, you need to have multiple TX queues. You can check the number of TX queues on your system like this:
+```
+ethtool -l veth0
+Channel parameters for veth0:
+Pre-set maximums:
+RX:		16
+TX:		16
+Other:		n/a
+Combined:	n/a
+Current hardware settings:
+RX:		1
+TX:		10
+Other:		n/a
+Combined:	n/a
+```
+
+Take note of the Current hardware settings for the TX queue. 
+You can change it like this to the maximum, in this example 16
+```
+ethtool -L veth0 tx 16
+```
 
 ## Contributing
 Contributions are welcome! Please feel free to submit pull requests, report bugs, or suggest new features.
