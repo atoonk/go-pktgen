@@ -26,8 +26,13 @@ func GetCurrentTXQueues(interfaceName string) (int, error) {
 	rx := regexp.MustCompile(`(?s)Current hardware settings:.*?TX:\s+(\d+)`)
 	matches := rx.FindStringSubmatch(out.String())
 	if len(matches) < 2 {
-		fmt.Println("could not find TX queues in output")
-		return 0, fmt.Errorf("could not find TX queues in output")
+		// If the TX queues are not found, try to find the combined queues
+		rx = regexp.MustCompile(`(?s)Current hardware settings:.*?Combined:\s+(\d+)`)
+		matches = rx.FindStringSubmatch(out.String())
+		if len(matches) < 2 {
+			fmt.Println("could not find TX queues in output")
+			return 0, fmt.Errorf("could not find TX queues in output")
+		}
 	}
 	var txQueues int
 	fmt.Sscanf(matches[1], "%d", &txQueues)
