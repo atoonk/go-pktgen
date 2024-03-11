@@ -41,7 +41,7 @@ func (s *BatchConnSender) Send(ctx context.Context) error {
 	var msgs []ipv4.Message
 
 	// let's create 128 payloads, that we'll send in one batch
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 128; i++ {
 		msgs = append(msgs, ipv4.Message{
 			Buffers: [][]byte{payload},
 			Addr:    s.dstAddr,
