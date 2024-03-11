@@ -137,7 +137,7 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 
 	var resultsSlice []resultItem
 	// define the methods as a slice
-	methods := []string{"af_xdp", "af_packet", "net_conn", "udp_syscall", "raw_socket", "af_pcap"}
+	methods := []string{"af_xdp", "af_packet", "net_conn", "udp_syscall", "raw_socket", "af_pcap", "pkt_conn"}
 
 	// Iterate over methods, run test and collect results
 	for _, TestType := range methods {
@@ -161,6 +161,8 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 					sender = pktgen.NewRawSocketSender(srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize)
 				case "af_pcap":
 					sender = pktgen.NewAFPcapSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr)
+				case "pkt_conn":
+					sender = pktgen.NewBatchConnSender(dstIPParsed, dstPort, payloadSize)
 				}
 				runTest(sender, duration, ifaceName, payloadSize) // Assume runTest is modified to not print directly
 				defer wg.Done()
@@ -310,6 +312,8 @@ func runStream(ctx context.Context, method, iface string, srcIP, dstIP net.IP, s
 		sender = pktgen.NewAFInetSyscallSender(dstIP, dstPort, payloadSize)
 	case "raw_socket":
 		sender = pktgen.NewRawSocketSender(srcIP, dstIP, srcPort, dstPort, payloadSize)
+	case "pkt_conn":
+		sender = pktgen.NewBatchConnSender(dstIP, dstPort, payloadSize)
 	default:
 		log.Fatalf("Unsupported method: %s", method)
 	}

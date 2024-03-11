@@ -8,6 +8,7 @@ require (
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/spf13/cobra v1.8.0
 	github.com/vishvananda/netlink v1.1.0
+	golang.org/x/net v0.0.0-20190923162816-aa69164e4478
 )
 
 require (
