@@ -332,7 +332,7 @@ func setupSignalHandler(cancelFunc context.CancelFunc) {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&method, "method", "af_packet", "method to use for sending packets [af_packet, net_conn, udp_syscall, raw_socket, af_pcap, benchmark]")
+	rootCmd.PersistentFlags().StringVar(&method, "method", "af_packet", "method to use for sending packets [af_packet, net_conn, udp_syscall, raw_socket, af_pcap, pkt_conn, benchmark]")
 	rootCmd.PersistentFlags().StringVar(&iface, "iface", "eth0", "Interface to use")
 	rootCmd.PersistentFlags().StringVar(&srcIP, "srcip", "192.168.64.1", "Source IP address")
 	rootCmd.PersistentFlags().StringVar(&dstIP, "dstip", "192.168.64.2", "Destination IP address")
