@@ -11,15 +11,18 @@ Below is an example benchmark result comparing the performance of different pack
 +-------------+-----------+------+
 |   Method    | Packets/s | Mb/s |
 +-------------+-----------+------+
-| af_xdp      |   2647936 | 1355 |
-| af_packet   |   1368070 |  700 |
-| af_pcap     |   1354087 |  693 |
-| udp_syscall |    861372 |  441 |
-| raw_socket  |    793781 |  406 |
-| pkt_conn    |    737277 |  387 |
-| net_conn    |    697277 |  357 |
+| af_xdp      |   2620595 | 1341 |
+| af_packet   |   1159690 |  593 |
+| af_pcap     |   1037554 |  531 |
+| udp_syscall |    688522 |  352 |
+| raw_socket  |    643401 |  329 |
+| pkt_conn    |    606258 |  310 |
+| net_conn    |    354065 |  181 |
 +-------------+-----------+------+
+
 ```
+
+The above was tested on an AMD EPYC 9124 @ 3.71GHz (16 cores)
 
 
 ## Getting Started
