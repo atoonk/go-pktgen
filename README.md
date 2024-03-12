@@ -16,6 +16,7 @@ Below is an example benchmark result comparing the performance of different pack
 | af_pcap     |   1354087 |  693 |
 | udp_syscall |    861372 |  441 |
 | raw_socket  |    793781 |  406 |
+| pkt_conn    |    737277 |  387 |
 | net_conn    |    697277 |  357 |
 +-------------+-----------+------+
 ```
