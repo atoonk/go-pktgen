@@ -1,3 +1,7 @@
+[![Go Report Card](https://goreportcard.com/badge/github.com/atoonk/go-pktgen)](https://goreportcard.com/report/github.com/atoonk/go-pktgen)
+[![Documentation](https://godoc.org/github.com/atoonk/go-pktgen?status.svg)](https://godoc.org/github.com/atoonk/go-pktgen)
+[![GitHub issues](https://img.shields.io/github/issues/atoonk/go-pktgen.svg)](https://github.com/atoonk/go-pktgen/issues)
+[![license](https://img.shields.io/github/license/atoonk/go-pktgen.svg)](https://github.com/atoonk/go-pktgen/blob/master/LICENSE)
 # Go Packet Generator (go-pktgen)
 
 The Go Packet Generator (`go-pktgen`) is a tool designed for network performance testing and stress testing. It demonstrates various methods of generating and sending packets in Go, allowing users to compare the performance differences between these methods. This tool supports direct `AF_PACKET` access, `AF_XDP`, raw sockets, high-level abstractions like `net.Conn`, and more.
