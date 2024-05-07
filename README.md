@@ -2,6 +2,8 @@
 [![Documentation](https://godoc.org/github.com/atoonk/go-pktgen?status.svg)](https://godoc.org/github.com/atoonk/go-pktgen)
 [![GitHub issues](https://img.shields.io/github/issues/atoonk/go-pktgen.svg)](https://github.com/atoonk/go-pktgen/issues)
 [![license](https://img.shields.io/github/license/atoonk/go-pktgen.svg)](https://github.com/atoonk/go-pktgen/blob/master/LICENSE)
+[![Stargazers over time](https://starchart.cc/atoonk/go-pktgen.svg?variant=adaptive)](https://starchart.cc/atoonk/go-pktgen)
+
 # Go Packet Generator (go-pktgen)
 
 For more information, also see my blog here: [High-Speed Packet Transmission in Go: From net.Dial to AF_XDP](https://toonk.io/sending-network-packets-in-go/)
@@ -29,7 +31,6 @@ Below is an example benchmark result comparing the performance of different pack
 ```
 
 The above was tested on an AMD EPYC 9124 @ 3.71GHz (16 cores)
-
 
 ## Getting Started
 
