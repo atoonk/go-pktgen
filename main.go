@@ -303,7 +303,7 @@ func runStream(ctx context.Context, method, iface string, srcIP, dstIP net.IP, s
 	var sender pktgen.Sender
 	switch method {
 	case "af_pcap":
-		sender = pktgen.NewAFPacketSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC)
+		sender = pktgen.NewAFPcapSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC)
 	case "af_packet":
 		sender = pktgen.NewAFPacketSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC)
 	case "af_xdp":
