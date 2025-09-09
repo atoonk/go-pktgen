@@ -137,7 +137,7 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 
 	var resultsSlice []resultItem
 	// define the methods as a slice
-	methods := []string{"af_xdp", "af_packet", "net_conn", "udp_syscall", "raw_socket", "af_pcap", "pkt_conn"}
+	methods := []string{"af_xdp", "af_packet", "net_conn", "udp_syscall", "raw_socket", "af_pcap", "pkt_conn", "gso"}
 
 	// Iterate over methods, run test and collect results
 	for _, TestType := range methods {
@@ -163,6 +163,8 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 					sender = pktgen.NewAFPcapSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr)
 				case "pkt_conn":
 					sender = pktgen.NewBatchConnSender(dstIPParsed, dstPort, payloadSize)
+				case "gso":
+					sender = pktgen.NewGSOSender(dstIPParsed, dstPort, payloadSize)
 				}
 				runTest(sender, duration, ifaceName, payloadSize) // Assume runTest is modified to not print directly
 				defer wg.Done()
@@ -314,6 +316,8 @@ func runStream(ctx context.Context, method, iface string, srcIP, dstIP net.IP, s
 		sender = pktgen.NewRawSocketSender(srcIP, dstIP, srcPort, dstPort, payloadSize)
 	case "pkt_conn":
 		sender = pktgen.NewBatchConnSender(dstIP, dstPort, payloadSize)
+	case "gso":
+		sender = pktgen.NewGSOSender(dstIP, dstPort, payloadSize)
 	default:
 		log.Fatalf("Unsupported method: %s", method)
 	}
@@ -332,7 +336,7 @@ func setupSignalHandler(cancelFunc context.CancelFunc) {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&method, "method", "af_packet", "method to use for sending packets [af_packet, net_conn, udp_syscall, raw_socket, af_pcap, pkt_conn, benchmark]")
+	rootCmd.PersistentFlags().StringVar(&method, "method", "af_packet", "method to use for sending packets [af_packet, net_conn, udp_syscall, raw_socket, af_pcap, pkt_conn, gso, benchmark]")
 	rootCmd.PersistentFlags().StringVar(&iface, "iface", "eth0", "Interface to use")
 	rootCmd.PersistentFlags().StringVar(&srcIP, "srcip", "192.168.64.1", "Source IP address")
 	rootCmd.PersistentFlags().StringVar(&dstIP, "dstip", "192.168.64.2", "Destination IP address")

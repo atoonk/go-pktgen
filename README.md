@@ -65,7 +65,7 @@ Flags:
       --duration int      Duration of the benchmark in seconds (default 5)
   -h, --help              help for pktgen
       --iface string      Interface to use (default "eth0")
-      --method string     method to use for sending packets [af_packet, net_conn, udp_syscall, raw_socket, af_pcap, benchmark] (default "af_packet")
+      --method string     method to use for sending packets [af_packet, net_conn, udp_syscall, raw_socket, af_pcap, pkt_conn, gso, benchmark] (default "af_packet")
       --payloadsize int   Size of the payload in bytes (default 100)
       --srcip string      Source IP address (default "192.168.64.1")
       --srcmac string     Source MAC address (default "de:ad:be:ef:ca:fe")
@@ -120,5 +120,4 @@ ethtool -L veth0 tx 16
 
 ## Contributing
 Contributions are welcome! Please feel free to submit pull requests, report bugs, or suggest new features.
-
 
