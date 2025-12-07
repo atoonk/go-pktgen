@@ -137,11 +137,12 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 
 	var resultsSlice []resultItem
 	// define the methods as a slice
-	methods := []string{"af_xdp", "af_packet", "net_conn", "udp_syscall", "raw_socket", "af_pcap", "pkt_conn", "gso"}
+	// Note: af_xdp (old implementation) is excluded because it conflicts with af_xdp_zc
+	// due to kernel-level AF_XDP queue binding that isn't fully released between tests
+	methods := []string{"af_xdp_zc", "af_packet", "net_conn", "udp_syscall", "raw_socket", "af_pcap", "pkt_conn", "gso"}
 
 	// Iterate over methods, run test and collect results
 	for _, TestType := range methods {
-
 		counterT0 := counterStats(ifaceName)
 		wg := &sync.WaitGroup{}
 		for i := 0; i < streams; i++ {
@@ -149,6 +150,8 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 			go func(streamNum int) {
 				var sender pktgen.Sender
 				switch TestType {
+				case "af_xdp_zc":
+					sender = pktgen.NewAFXdpZCSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, dstMACAddr, srcMACAddr, streamNum-1)
 				case "af_xdp":
 					sender = pktgen.NewAFXdpSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, dstMACAddr, srcMACAddr, streamNum-1)
 				case "af_packet":
@@ -173,11 +176,15 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 		}
 
 		wg.Wait()
+
+		// Brief pause after each test to ensure clean transition
+		time.Sleep(100 * time.Millisecond)
+
 		counterT1 := counterStats(ifaceName)
 		packetsPS := int(counterT1-counterT0) / duration
 		mbps := (packetsPS * payloadSize * 8) / (1000 * 1000)
 		resultsSlice = append(resultsSlice, resultItem{Method: TestType, PacketsPS: packetsPS, Mbps: mbps})
-		// Check if the context has been cancelled before continuing to the next method
+
 		if ctx.Err() != nil {
 			break
 		}
@@ -235,7 +242,9 @@ func runTest(sender pktgen.Sender, duration int, ifaceName string, payloadSize i
 			log.Fatalf("Error sending packet: %v", err)
 		}
 	case <-ctx.Done():
-		// Wait for the sending process to finish or be cancelled
+		// Context cancelled, but we MUST wait for Send() to return
+		// so that all defers (especially XDP cleanup) have executed
+		<-errChan
 	}
 
 }
@@ -306,6 +315,8 @@ func runStream(ctx context.Context, method, iface string, srcIP, dstIP net.IP, s
 		sender = pktgen.NewAFPcapSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC)
 	case "af_packet":
 		sender = pktgen.NewAFPacketSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC)
+	case "af_xdp_zc":
+		sender = pktgen.NewAFXdpZCSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, streamNum-1)
 	case "af_xdp":
 		sender = pktgen.NewAFXdpSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, streamNum-1)
 	case "net_conn":
@@ -336,7 +347,7 @@ func setupSignalHandler(cancelFunc context.CancelFunc) {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&method, "method", "af_packet", "method to use for sending packets [af_packet, net_conn, udp_syscall, raw_socket, af_pcap, pkt_conn, gso, benchmark]")
+	rootCmd.PersistentFlags().StringVar(&method, "method", "af_packet", "method to use for sending packets [af_xdp_zc, af_xdp, af_packet, net_conn, udp_syscall, raw_socket, af_pcap, pkt_conn, gso, benchmark]")
 	rootCmd.PersistentFlags().StringVar(&iface, "iface", "eth0", "Interface to use")
 	rootCmd.PersistentFlags().StringVar(&srcIP, "srcip", "192.168.64.1", "Source IP address")
 	rootCmd.PersistentFlags().StringVar(&dstIP, "dstip", "192.168.64.2", "Destination IP address")
