@@ -51,6 +51,7 @@ func (s *AFXdpSender) Send(ctx context.Context) error {
 	if err != nil {
 		panic(err)
 	}
+	defer xsk.Close() // Ensure XDP socket and program are cleaned up
 
 	// create a packet configuration
 	config, err := NewPacketConfig(
