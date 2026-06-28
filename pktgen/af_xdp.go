@@ -1,16 +1,24 @@
+//go:build linux
+
 package pktgen
 
 import (
 	"context"
 	"fmt"
-	"math"
 	"net"
+	"sync"
+	"time"
 
-	"github.com/asavie/xdp"
+	"github.com/atoonk/go-afxdp"
 	"github.com/vishvananda/netlink"
 )
 
-// AFXdpSender implements the Sender interface using AF_XDP
+// AFXdpSender implements the Sender interface using the github.com/atoonk/go-afxdp
+// library — the same one the library's blast example is built on. It attaches a
+// no-op XDP program (afxdp.MatchNone) to enable the AF_XDP transmit datapath
+// (zero-copy where the driver supports it, copy on veth) without stealing any
+// receive traffic, then builds the UDP frame once and transmits it across its
+// tx queue as fast as the ring will take it.
 type AFXdpSender struct {
 	queueID        int
 	iface          string
@@ -37,23 +45,34 @@ func NewAFXdpSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payload
 	}
 }
 
-// Send sends packets using AFXdpSender
+// Send sends packets using the go-afxdp library until the context is cancelled.
+//
+// Unlike the other senders, go-afxdp's model is a single Fleet that binds every
+// rx/tx queue with one socket each, driven by one goroutine per queue — so this
+// sender uses ALL queues at once. go-pktgen's "one stream per queue" model
+// doesn't apply (and a second Open would attach a conflicting XDP program), so
+// only the first stream does the work; any extra streams idle.
 func (s *AFXdpSender) Send(ctx context.Context) error {
-
-	// Initialize the XDP socket.
-
-	link, err := netlink.LinkByName(s.iface)
-	if err != nil {
-		panic(err)
+	if s.queueID != 0 {
+		<-ctx.Done()
+		return nil
 	}
 
-	xsk, err := xdp.NewSocket(link.Attrs().Index, s.queueID, nil)
+	// MatchNone attaches the XDP program (enabling the AF_XDP TX datapath) but
+	// redirects nothing, so the host's receive traffic is untouched. With no
+	// WithQueues it binds every queue; the mode is auto-selected (native
+	// zero-copy on a capable NIC, copy on veth).
+	fleet, err := afxdp.Open(s.iface, afxdp.WithFilter(afxdp.MatchNone()))
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("afxdp open: %w", err)
 	}
-	defer xsk.Close() // Ensure XDP socket and program are cleaned up
+	defer fleet.Close()
 
-	// create a packet configuration
+	// Native XDP attach can relink the NIC for several seconds (instant on
+	// veth); wait so we don't transmit into a down link.
+	waitLinkUpAFXdp(s.iface, 15*time.Second)
+
+	// Build the packet once, the same way the other senders do.
 	config, err := NewPacketConfig(
 		WithEthernetLayer(s.srcMAC, s.dstMAC),
 		WithIpLayer(s.srcIP, s.dstIP),
@@ -63,36 +82,45 @@ func (s *AFXdpSender) Send(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("error configuring packet: %v", err)
 	}
-	// build the packet
 	packet, err := BuildPacket(config)
 	if err != nil {
 		return fmt.Errorf("failed to build packet: %w", err)
 	}
 
-	frameLen := len(packet)
-	// Fill all the frames in UMEM with the pre-generated UDP packet.
-
-	descs := xsk.GetDescs(math.MaxInt32, false)
-	for i := range descs {
-		frameLen = copy(xsk.GetFrame(descs[i]), packet)
+	// One transmit goroutine per queue.
+	const batch = 256
+	var wg sync.WaitGroup
+	for _, xsk := range fleet.Sockets() {
+		wg.Add(1)
+		go func(xsk *afxdp.Socket) {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				// SendFunc copies the packet into each frame and handles all the
+				// ring bookkeeping (completions, kicking, full-ring draining).
+				xsk.SendFunc(batch, func(i int, frame []byte) int {
+					return copy(frame, packet)
+				})
+			}
+		}(xsk)
 	}
+	wg.Wait()
+	return nil
+}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-			descs := xsk.GetDescs(xsk.NumFreeTxSlots(), false)
-			for i := range descs {
-				descs[i].Len = uint32(frameLen)
-			}
-			xsk.Transmit(descs)
-
-			_, _, err = xsk.Poll(-1)
-			if err != nil {
-				panic(err)
-			}
+// waitLinkUpAFXdp polls until the interface is operationally up or the timeout
+// elapses (native XDP attach can take the link down for several seconds on some
+// drivers; it's instant on veth).
+func waitLinkUpAFXdp(iface string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if l, err := netlink.LinkByName(iface); err == nil && l.Attrs().OperState == netlink.OperUp {
+			return
 		}
+		time.Sleep(200 * time.Millisecond)
 	}
-
 }

@@ -137,9 +137,11 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 
 	var resultsSlice []resultItem
 	// define the methods as a slice
-	// Note: af_xdp (old implementation) is excluded because it conflicts with af_xdp_zc
-	// due to kernel-level AF_XDP queue binding that isn't fully released between tests
-	methods := []string{"af_xdp_zc", "af_packet", "net_conn", "udp_syscall", "raw_socket", "af_pcap", "pkt_conn", "gso"}
+	// af_xdp now uses the github.com/atoonk/go-afxdp library (see pktgen/af_xdp.go).
+	// Only one AF_XDP method runs per benchmark: the kernel doesn't release an
+	// AF_XDP queue binding fast enough to bind a second one back-to-back, so
+	// af_xdp_zc is left out when af_xdp is present.
+	methods := []string{"af_xdp", "af_packet", "net_conn", "udp_syscall", "raw_socket", "af_pcap", "pkt_conn", "gso"}
 
 	// Iterate over methods, run test and collect results
 	for _, TestType := range methods {
