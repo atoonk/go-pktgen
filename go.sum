@@ -1,3 +1,5 @@
+github.com/atoonk/go-afxdp v0.0.0-20260628053623-8d202ed6f573 h1:NGadvp2NlyLT8b5jxqI24JMD+I4SDNWu0yNL4cnvPCs=
+github.com/atoonk/go-afxdp v0.0.0-20260628053623-8d202ed6f573/go.mod h1:+Ljn/94jxGklKyRta9wydqqnXcEx+kczTU8GbZdy4Ns=
 github.com/cilium/ebpf v0.20.0 h1:atwWj9d3NffHyPZzVlx3hmw1on5CLe9eljR8VuHTwhM=
 github.com/cilium/ebpf v0.20.0/go.mod h1:pzLjFymM+uZPLk/IXZUL63xdx5VXEo+enTzxkZXdycw=
 github.com/cpuguy83/go-md2man/v2 v2.0.3/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
