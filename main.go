@@ -26,7 +26,6 @@ import (
 	"github.com/atoonk/go-pktgen/pktgen"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
-	"github.com/vishvananda/netlink"
 )
 
 type resultItem struct {
@@ -47,6 +46,8 @@ var (
 	dstMAC      string
 	duration    int
 	streams     int
+	gsoSegments int
+	vlan        int
 )
 
 // Define global or package-level variables if needed
@@ -59,6 +60,16 @@ var rootCmd = &cobra.Command{
 
 // this starts the packet generator, using the method specified by the user
 func runPacketGenerator(cmd *cobra.Command, args []string) {
+
+	// Unless the user set --srcmac explicitly, use the interface's real MAC.
+	// Frame-building methods (af_packet/af_pcap/af_xdp) then send with a real,
+	// consistent source MAC, so the switch's MAC learning stays sane — a bogus
+	// placeholder source can stall L2 delivery for the first seconds of a run.
+	if !cmd.Flags().Changed("srcmac") {
+		if ifi, err := net.InterfaceByName(iface); err == nil && len(ifi.HardwareAddr) == 6 {
+			srcMAC = ifi.HardwareAddr.String()
+		}
+	}
 
 	srcMACAddr, err := net.ParseMAC(srcMAC)
 	if err != nil {
@@ -97,12 +108,23 @@ func runPacketGenerator(cmd *cobra.Command, args []string) {
 
 	setupSignalHandler(cancel)
 
+	// Warm the L2 path before sending: a quick kernel UDP send ARP-resolves the
+	// destination, which makes the receiver reply (transmit) so the switch learns
+	// its MAC. Frame-building methods (af_packet/af_pcap/af_xdp) craft frames with
+	// an explicit --dstmac and never ARP, so against a silent receiver (e.g. a
+	// drop sink that never transmits) the switch has no forwarding entry and drops
+	// the traffic. Kernel methods self-warm via ARP; this makes every method work.
+	log.Println("warming up the path (ARP + switch learning)...")
+	warmupPath(dstIPParsed, dstPort, payloadSize)
+
 	if method == "benchmark" {
 		runBenchmark(ctx, iface, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, duration, srcMACAddr, dstMACAddr, streams)
 
 	} else {
-		// start the printStats goroutine
-		go printStats(iface, payloadSize, ctx)
+		// One shared counter tallies packets across all streams; each sender
+		// increments it with real wire-packet counts and printStats reports it.
+		counter := &pktgen.Counter{}
+		go printStats(counter, payloadSize, ctx)
 
 		// run the streams, that will know what method to start
 		wg := &sync.WaitGroup{}
@@ -110,7 +132,7 @@ func runPacketGenerator(cmd *cobra.Command, args []string) {
 			wg.Add(1)
 			go func(streamNum int) {
 				defer wg.Done()
-				runStream(ctx, method, iface, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, duration, streamNum)
+				runStream(ctx, method, iface, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, duration, streamNum, counter)
 			}(i + 1)
 		}
 
@@ -141,11 +163,16 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 	// Only one AF_XDP method runs per benchmark: the kernel doesn't release an
 	// AF_XDP queue binding fast enough to bind a second one back-to-back, so
 	// af_xdp_zc is left out when af_xdp is present.
-	methods := []string{"af_xdp", "af_packet", "net_conn", "udp_syscall", "raw_socket", "af_pcap", "pkt_conn", "gso"}
+	//
+	// af_xdp runs LAST: it attaches/detaches an XDP program (churning the queue
+	// binding), so keeping it at the end avoids that disturbing the methods that
+	// follow it.
+	methods := []string{"af_packet", "net_conn", "udp_syscall", "raw_socket", "af_pcap", "pkt_conn", "gso", "af_xdp"}
 
 	// Iterate over methods, run test and collect results
 	for _, TestType := range methods {
-		counterT0 := counterStats(ifaceName)
+		log.Printf("=== benchmark method: %s ===", TestType)
+		counter := &pktgen.Counter{}
 		wg := &sync.WaitGroup{}
 		for i := 0; i < streams; i++ {
 			wg.Add(1)
@@ -153,11 +180,11 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 				var sender pktgen.Sender
 				switch TestType {
 				case "af_xdp_zc":
-					sender = pktgen.NewAFXdpZCSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, dstMACAddr, srcMACAddr, streamNum-1)
+					sender = pktgen.NewAFXdpZCSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, streamNum-1, vlan)
 				case "af_xdp":
-					sender = pktgen.NewAFXdpSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, dstMACAddr, srcMACAddr, streamNum-1)
+					sender = pktgen.NewAFXdpSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, streamNum-1, vlan)
 				case "af_packet":
-					sender = pktgen.NewAFPacketSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, dstMACAddr, srcMACAddr)
+					sender = pktgen.NewAFPacketSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, vlan)
 				case "net_conn":
 					sender = pktgen.NewNetConnSender(dstIPParsed, dstPort, payloadSize)
 				case "udp_syscall":
@@ -165,13 +192,13 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 				case "raw_socket":
 					sender = pktgen.NewRawSocketSender(srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize)
 				case "af_pcap":
-					sender = pktgen.NewAFPcapSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr)
+					sender = pktgen.NewAFPcapSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, vlan)
 				case "pkt_conn":
 					sender = pktgen.NewBatchConnSender(dstIPParsed, dstPort, payloadSize)
 				case "gso":
-					sender = pktgen.NewGSOSender(dstIPParsed, dstPort, payloadSize)
+					sender = pktgen.NewGSOSender(dstIPParsed, dstPort, payloadSize, gsoSegments)
 				}
-				runTest(sender, duration, ifaceName, payloadSize) // Assume runTest is modified to not print directly
+				runTest(sender, duration, counter)
 				defer wg.Done()
 
 			}(i + 1)
@@ -182,9 +209,8 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 		// Brief pause after each test to ensure clean transition
 		time.Sleep(100 * time.Millisecond)
 
-		counterT1 := counterStats(ifaceName)
-		packetsPS := int(counterT1-counterT0) / duration
-		mbps := (packetsPS * payloadSize * 8) / (1000 * 1000)
+		packetsPS := int(counter.Load()) / duration
+		mbps := (packetsPS * (payloadSize + 42) * 8) / (1000 * 1000)
 		resultsSlice = append(resultsSlice, resultItem{Method: TestType, PacketsPS: packetsPS, Mbps: mbps})
 
 		if ctx.Err() != nil {
@@ -208,8 +234,18 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 	table.Render()
 }
 
-// runTest runs a test with the given sender and prints the results
-func runTest(sender pktgen.Sender, duration int, ifaceName string, payloadSize int) {
+// warmupPath sends real UDP to the destination for a moment so ARP resolves and
+// the switch learns the MAC path before the timed methods run. Without it, the
+// first method's packets can be dropped while L2 settles (variable, a few to
+// ~20 seconds), which looks like the early methods "not working".
+func warmupPath(dstIP net.IP, dstPort, payloadSize int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_ = pktgen.NewNetConnSender(dstIP, dstPort, payloadSize).Send(ctx, &pktgen.Counter{})
+}
+
+// runTest runs a test with the given sender, tallying packets into counter.
+func runTest(sender pktgen.Sender, duration int, counter *pktgen.Counter) {
 
 	// Create a context that will be canceled when the timeout is reached or an interrupt signal is received
 	ctx, cancel := context.WithCancel(context.Background())
@@ -233,7 +269,7 @@ func runTest(sender pktgen.Sender, duration int, ifaceName string, payloadSize i
 	// Start sending packets in a goroutine
 	errChan := make(chan error, 1)
 	go func() {
-		err := sender.Send(ctx)
+		err := sender.Send(ctx, counter)
 		errChan <- err
 	}()
 
@@ -251,31 +287,11 @@ func runTest(sender pktgen.Sender, duration int, ifaceName string, payloadSize i
 
 }
 
-// counterStats returns the number of transmitted packets per second
-func counterStats(ifaceName string) uint64 {
-	// Fetch the link by name
-	link, err := netlink.LinkByName(ifaceName)
-	if err != nil {
-		fmt.Printf("Error fetching link: %v\n", err)
-		return 0
-	}
+// printStats prints the packet rate once a second, read from the shared
+// application counter (which reflects real wire packets across all offloads).
+func printStats(counter *pktgen.Counter, frameLen int, ctx context.Context) {
 
-	// Accessing the statistics from the link attributes
-	attrs := link.Attrs()
-	if attrs == nil || attrs.Statistics == nil {
-		fmt.Println("Failed to get link attributes or statistics")
-		return 0 // Skip this iteration if stats are unavailable
-	}
-
-	// Print the number of packets transmitted per second
-	return attrs.Statistics.TxPackets
-
-}
-
-// printStats prints the number of transmitted packets per second
-func printStats(ifaceName string, frameLen int, ctx context.Context) {
-
-	var prevTxPackets, numPkts uint64
+	var prev, numPkts uint64
 	for {
 		select {
 		case <-ctx.Done():
@@ -283,44 +299,39 @@ func printStats(ifaceName string, frameLen int, ctx context.Context) {
 		default:
 			time.Sleep(time.Duration(1) * time.Second)
 
-			pktCounter := counterStats(ifaceName)
+			cur := counter.Load()
 
-			// skip the first loop, when prevTxPackets is 0
-			if prevTxPackets == 0 {
-				prevTxPackets = pktCounter
+			// skip the first loop so the first printed value is a full-second
+			// delta (and misses any link-settling ramp on AF_XDP attach)
+			if prev == 0 {
+				prev = cur
 				continue
 			}
 
-			// Calculate the difference in transmitted packets
-			numPkts = pktCounter - prevTxPackets
-			prevTxPackets = pktCounter
+			// Calculate the packets sent in the last second
+			numPkts = cur - prev
+			prev = cur
 
-			// Print the number of packets transmitted per second
-			// also account for thernet, ipv4 and udp header
-			// ethernet header = 14 bytes
-			// ipv4 header = 20 bytes
-			// udp header = 8 bytes
-			// total = 42 bytes
+			// Approximate on-wire bytes: payload + eth 14 + ipv4 20 + udp 8 = +42.
 			bps := (numPkts * uint64(frameLen+42) * 8)
-			//fmt.Printf("%d packets/s (%d Mb/s)\n", numPkts, (numPkts*uint64(frameLen)*8)/(1000*1000))
 			fmt.Printf("%d packets/s (%d Mb/s)\n", numPkts, bps/(1000*1000))
 		}
 	}
 }
 
-func runStream(ctx context.Context, method, iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr, duration, streamNum int) {
+func runStream(ctx context.Context, method, iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr, duration, streamNum int, counter *pktgen.Counter) {
 	// Replicate the switch logic from your existing `main()`
 	// For example:
 	var sender pktgen.Sender
 	switch method {
 	case "af_pcap":
-		sender = pktgen.NewAFPcapSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC)
+		sender = pktgen.NewAFPcapSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, vlan)
 	case "af_packet":
-		sender = pktgen.NewAFPacketSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC)
+		sender = pktgen.NewAFPacketSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, vlan)
 	case "af_xdp_zc":
-		sender = pktgen.NewAFXdpZCSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, streamNum-1)
+		sender = pktgen.NewAFXdpZCSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, streamNum-1, vlan)
 	case "af_xdp":
-		sender = pktgen.NewAFXdpSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, streamNum-1)
+		sender = pktgen.NewAFXdpSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, streamNum-1, vlan)
 	case "net_conn":
 		sender = pktgen.NewNetConnSender(dstIP, dstPort, payloadSize)
 	case "udp_syscall":
@@ -330,11 +341,11 @@ func runStream(ctx context.Context, method, iface string, srcIP, dstIP net.IP, s
 	case "pkt_conn":
 		sender = pktgen.NewBatchConnSender(dstIP, dstPort, payloadSize)
 	case "gso":
-		sender = pktgen.NewGSOSender(dstIP, dstPort, payloadSize)
+		sender = pktgen.NewGSOSender(dstIP, dstPort, payloadSize, gsoSegments)
 	default:
 		log.Fatalf("Unsupported method: %s", method)
 	}
-	runTest(sender, duration, iface, payloadSize)
+	runTest(sender, duration, counter)
 
 }
 
@@ -356,10 +367,12 @@ func init() {
 	rootCmd.PersistentFlags().IntVar(&srcPort, "srcport", 12345, "Source UDP port")
 	rootCmd.PersistentFlags().IntVar(&dstPort, "dstport", 12345, "Destination UDP port")
 	rootCmd.PersistentFlags().IntVar(&payloadSize, "payloadsize", 100, "Size of the payload in bytes")
-	rootCmd.PersistentFlags().StringVar(&srcMAC, "srcmac", "de:ad:be:ef:ca:fe", "Source MAC address")
+	rootCmd.PersistentFlags().StringVar(&srcMAC, "srcmac", "de:ad:be:ef:ca:fe", "Source MAC address (default: the --iface interface's real MAC)")
 	rootCmd.PersistentFlags().StringVar(&dstMAC, "dstmac", "c0:ff:ee:00:00:00", "Destination MAC address")
 	rootCmd.PersistentFlags().IntVar(&duration, "duration", 5, "Duration of the benchmark in seconds")
 	rootCmd.PersistentFlags().IntVar(&streams, "streams", 1, "Number of concurrent streams for sending packets")
+	rootCmd.PersistentFlags().IntVar(&gsoSegments, "segments", 8, "GSO only: segments the kernel slices each sendmsg into (payloadsize*segments must be <= 65507)")
+	rootCmd.PersistentFlags().IntVar(&vlan, "vlan", 0, "802.1Q VLAN ID to tag frames with (0 = untagged; frame-building methods af_packet/af_pcap/af_xdp[_zc] only). Use with --iface <physical> to run AF_XDP native instead of generic-on-vlan.")
 
 }
 

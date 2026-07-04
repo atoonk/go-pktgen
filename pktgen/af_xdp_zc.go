@@ -19,13 +19,15 @@ type AFXdpZCSender struct {
 	srcPort        uint16
 	dstPort        uint16
 	payloadSize    int
+	vlanID         int
 	srcMAC, dstMAC net.HardwareAddr
 }
 
 // NewAFXdpZCSender creates a new AFXdpZCSender with specified parameters
-func NewAFXdpZCSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr, queueID int) *AFXdpZCSender {
+func NewAFXdpZCSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr, queueID, vlanID int) *AFXdpZCSender {
 	return &AFXdpZCSender{
 		queueID:     queueID,
+		vlanID:      vlanID,
 		srcMAC:      srcMAC,
 		dstMAC:      dstMAC,
 		iface:       iface,
@@ -38,7 +40,7 @@ func NewAFXdpZCSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, paylo
 }
 
 // Send sends packets using AFXdpZCSender with zero-copy support
-func (s *AFXdpZCSender) Send(ctx context.Context) error {
+func (s *AFXdpZCSender) Send(ctx context.Context, c *Counter) error {
 	// Initialize the AF_XDP interface with zero-copy preference
 	iface, err := afxdp.MakeInterface(s.iface, afxdp.InterfaceConfig{
 		PreferZerocopy: true,
@@ -72,6 +74,7 @@ func (s *AFXdpZCSender) Send(ctx context.Context) error {
 	// Build the packet once
 	config, err := NewPacketConfig(
 		WithEthernetLayer(s.srcMAC, s.dstMAC),
+		WithVlanLayer(s.vlanID),
 		WithIpLayer(s.srcIP, s.dstIP),
 		WithUdpLayer(int(s.srcPort), int(s.dstPort)),
 		WithPayloadSize(s.payloadSize),
@@ -121,7 +124,7 @@ func (s *AFXdpZCSender) Send(ctx context.Context) error {
 			}
 
 			// Submit the batch
-			_, err := sock.SubmitBatch(addrs, lens)
+			n, err := sock.SubmitBatch(addrs, lens)
 			if err != nil {
 				return fmt.Errorf("failed to submit batch: %w", err)
 			}
@@ -130,6 +133,7 @@ func (s *AFXdpZCSender) Send(ctx context.Context) error {
 			if err := sock.FlushTx(); err != nil {
 				return fmt.Errorf("failed to flush TX: %w", err)
 			}
+			c.Add(uint64(n))
 
 			// Poll for completions to reclaim frames
 			sock.PollCompletions(batchSize)

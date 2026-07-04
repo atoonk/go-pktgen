@@ -33,7 +33,7 @@ func NewBatchConnSender(dstIP net.IP, dstPort, payloadSize int) *BatchConnSender
 
 // Send sends packets using WriteBatch
 // func (s *BatchConnSender) Send(ctx context.Context, payloads [][]byte) error {
-func (s *BatchConnSender) Send(ctx context.Context) error {
+func (s *BatchConnSender) Send(ctx context.Context, c *Counter) error {
 
 	payload := buildPayload(s.payloadSize)
 
@@ -55,10 +55,11 @@ func (s *BatchConnSender) Send(ctx context.Context) error {
 		default:
 			// sendmmsg is not available in the ipv4.PacketConn
 			// so we'll use WriteBatch instead, which is a wrapper around sendmmsg
-			_, err := s.pConn.WriteBatch(msgs, 0)
+			n, err := s.pConn.WriteBatch(msgs, 0)
 			if err != nil {
 				return err
 			}
+			c.Add(uint64(n))
 		}
 	}
 }

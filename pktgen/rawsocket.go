@@ -29,7 +29,7 @@ func NewRawSocketSender(srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int) 
 }
 
 // Send sends packets using RawSocketSender
-func (s *RawSocketSender) Send(ctx context.Context) error {
+func (s *RawSocketSender) Send(ctx context.Context, c *Counter) error {
 	// Create a raw socket
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_RAW)
 	if err != nil {
@@ -76,6 +76,7 @@ func (s *RawSocketSender) Send(ctx context.Context) error {
 			if err := syscall.Sendto(fd, packet, 0, dstAddr); err != nil {
 				log.Fatalf("Failed to send packet: %v", err)
 			}
+			c.Add(1)
 		}
 	}
 }

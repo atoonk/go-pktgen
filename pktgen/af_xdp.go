@@ -27,13 +27,15 @@ type AFXdpSender struct {
 	srcPort        uint16
 	dstPort        uint16
 	payloadSize    int
+	vlanID         int
 	srcMAC, dstMAC net.HardwareAddr
 }
 
 // NewAFXdpSender creates a new AFXdpSender with specified parameters
-func NewAFXdpSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr, queueID int) *AFXdpSender {
+func NewAFXdpSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr, queueID, vlanID int) *AFXdpSender {
 	return &AFXdpSender{
 		queueID:     queueID,
+		vlanID:      vlanID,
 		srcMAC:      srcMAC,
 		dstMAC:      dstMAC,
 		iface:       iface,
@@ -52,7 +54,7 @@ func NewAFXdpSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payload
 // sender uses ALL queues at once. go-pktgen's "one stream per queue" model
 // doesn't apply (and a second Open would attach a conflicting XDP program), so
 // only the first stream does the work; any extra streams idle.
-func (s *AFXdpSender) Send(ctx context.Context) error {
+func (s *AFXdpSender) Send(ctx context.Context, c *Counter) error {
 	if s.queueID != 0 {
 		<-ctx.Done()
 		return nil
@@ -75,6 +77,7 @@ func (s *AFXdpSender) Send(ctx context.Context) error {
 	// Build the packet once, the same way the other senders do.
 	config, err := NewPacketConfig(
 		WithEthernetLayer(s.srcMAC, s.dstMAC),
+		WithVlanLayer(s.vlanID),
 		WithIpLayer(s.srcIP, s.dstIP),
 		WithUdpLayer(int(s.srcPort), int(s.dstPort)),
 		WithPayloadSize(s.payloadSize),
@@ -101,10 +104,12 @@ func (s *AFXdpSender) Send(ctx context.Context) error {
 				default:
 				}
 				// SendFunc copies the packet into each frame and handles all the
-				// ring bookkeeping (completions, kicking, full-ring draining).
-				xsk.SendFunc(batch, func(i int, frame []byte) int {
+				// ring bookkeeping (completions, kicking, full-ring draining). It
+				// returns how many frames were actually queued this call.
+				n := xsk.SendFunc(batch, func(i int, frame []byte) int {
 					return copy(frame, packet)
 				})
+				c.Add(uint64(n))
 			}
 		}(xsk)
 	}

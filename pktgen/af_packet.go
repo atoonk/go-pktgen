@@ -16,11 +16,12 @@ type AFPacketSender struct {
 	srcPort        uint16
 	dstPort        uint16
 	payloadSize    int
+	vlanID         int
 	srcMAC, dstMAC net.HardwareAddr
 }
 
 // NewAFPacketSender creates a new AFPacketSender with specified parameters
-func NewAFPacketSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr) *AFPacketSender {
+func NewAFPacketSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr, vlanID int) *AFPacketSender {
 	return &AFPacketSender{
 		srcMAC:      srcMAC,
 		dstMAC:      dstMAC,
@@ -30,11 +31,12 @@ func NewAFPacketSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payl
 		srcPort:     uint16(srcPort),
 		dstPort:     uint16(dstPort),
 		payloadSize: payloadSize,
+		vlanID:      vlanID,
 	}
 }
 
 // Send sends packets using AF_PACKET
-func (s *AFPacketSender) Send(ctx context.Context) error {
+func (s *AFPacketSender) Send(ctx context.Context, c *Counter) error {
 	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW, int(htons(syscall.ETH_P_IP)))
 	if err != nil {
 		return fmt.Errorf("failed to create socket: %w", err)
@@ -55,6 +57,7 @@ func (s *AFPacketSender) Send(ctx context.Context) error {
 	// create a packet configuration
 	config, err := NewPacketConfig(
 		WithEthernetLayer(s.srcMAC, s.dstMAC),
+		WithVlanLayer(s.vlanID),
 		WithIpLayer(s.srcIP, s.dstIP),
 		WithUdpLayer(int(s.srcPort), int(s.dstPort)),
 		WithPayloadSize(s.payloadSize),
@@ -76,6 +79,7 @@ func (s *AFPacketSender) Send(ctx context.Context) error {
 			if err := syscall.Sendto(fd, packet, 0, addr); err != nil {
 				return fmt.Errorf("failed to send packet: %w", err)
 			}
+			c.Add(1)
 		}
 	}
 

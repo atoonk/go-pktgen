@@ -21,15 +21,24 @@ type GSOSender struct {
 }
 
 // NewGSOSender creates a new GSOSender.
-// It interprets payloadSize as the per-segment size and uses a fixed batch of segments.
-func NewGSOSender(dstIP net.IP, dstPort, segmentSize int) *GSOSender {
+// It interprets segmentSize as the per-segment payload size and numSegments as
+// how many segments the kernel slices each sendmsg into (<=0 defaults to 8).
+func NewGSOSender(dstIP net.IP, dstPort, segmentSize, numSegments int) *GSOSender {
+    if numSegments <= 0 {
+        numSegments = 8
+    }
     return &GSOSender{
         dstIP:       dstIP,
         dstPort:     uint16(dstPort),
         segmentSize: segmentSize,
-        numSegments: 8, // default number of segments per UDP frame
+        numSegments: numSegments,
     }
 }
+
+// maxUDPPayload is the largest UDP payload that fits in one IPv4 datagram
+// (65535 - 20 IPv4 - 8 UDP). The GSO buffer handed to one sendmsg cannot exceed
+// it, so segmentSize*numSegments must stay at or below this.
+const maxUDPPayload = 65507
 
 // Some distributions ship older golang.org/x/sys without SOL_UDP/UDP_SEGMENT.
 // Define the Linux values here to remain compatible.
@@ -40,7 +49,13 @@ const (
 )
 
 // Send transmits UDP payloads using UDP_SEGMENT control message for GSO
-func (s *GSOSender) Send(ctx context.Context) error {
+func (s *GSOSender) Send(ctx context.Context, c *Counter) error {
+    // One sendmsg carries segmentSize*numSegments bytes of payload, which the
+    // kernel then slices; it cannot exceed one UDP datagram's worth.
+    if total := s.segmentSize * s.numSegments; total > maxUDPPayload {
+        return fmt.Errorf("gso: segmentSize*numSegments = %d exceeds max UDP payload %d; lower --payloadsize or --segments", total, maxUDPPayload)
+    }
+
     // Create UDP socket
     fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
     if err != nil {
@@ -78,6 +93,8 @@ func (s *GSOSender) Send(ctx context.Context) error {
             if _, err := syscall.SendmsgN(fd, payload, cmsgBuf, sa, 0); err != nil {
                 return fmt.Errorf("SendmsgN failed: %w", err)
             }
+            // One sendmsg becomes numSegments UDP datagrams on the wire.
+            c.Add(uint64(s.numSegments))
         }
     }
 }

@@ -17,11 +17,12 @@ type AFPcapSender struct {
 	srcPort        uint16
 	dstPort        uint16
 	payloadSize    int
+	vlanID         int
 	srcMAC, dstMAC net.HardwareAddr
 }
 
 // NewAFPcapSender creates a new NewAFPcapSender with specified parameters
-func NewAFPcapSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr) *AFPcapSender {
+func NewAFPcapSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr, vlanID int) *AFPcapSender {
 	return &AFPcapSender{
 		srcMAC:      srcMAC,
 		dstMAC:      dstMAC,
@@ -31,11 +32,12 @@ func NewAFPcapSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloa
 		srcPort:     uint16(srcPort),
 		dstPort:     uint16(dstPort),
 		payloadSize: payloadSize,
+		vlanID:      vlanID,
 	}
 }
 
 // Send sends packets using PCAP handle
-func (s *AFPcapSender) Send(ctx context.Context) error {
+func (s *AFPcapSender) Send(ctx context.Context, c *Counter) error {
 
 	// open the device for sending
 	// we don't need to block, as we're not reading packets
@@ -50,6 +52,7 @@ func (s *AFPcapSender) Send(ctx context.Context) error {
 	// create a packet configuration
 	config, err := NewPacketConfig(
 		WithEthernetLayer(s.srcMAC, s.dstMAC),
+		WithVlanLayer(s.vlanID),
 		WithIpLayer(s.srcIP, s.dstIP),
 		WithUdpLayer(int(s.srcPort), int(s.dstPort)),
 		WithPayloadSize(s.payloadSize),
@@ -72,6 +75,7 @@ func (s *AFPcapSender) Send(ctx context.Context) error {
 			if err := handle.WritePacketData(packet); err != nil {
 				return fmt.Errorf("failed to send packet: %w", err)
 			}
+			c.Add(1)
 		}
 	}
 

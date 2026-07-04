@@ -24,7 +24,7 @@ func NewNetConnSender(dstIP net.IP, dstPort, payloadSize int) *NetConnSender {
 }
 
 // Send sends packets to the destination IP address
-func (s *NetConnSender) Send(ctx context.Context) error {
+func (s *NetConnSender) Send(ctx context.Context, c *Counter) error {
 	conn, err := net.Dial("udp", fmt.Sprintf("%s:%d", s.dstIP, s.dstPort))
 	if err != nil {
 		return fmt.Errorf("failed to dial UDP: %w", err)
@@ -41,7 +41,9 @@ func (s *NetConnSender) Send(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		default:
-			_, _ = conn.Write(payload)
+			if _, err := conn.Write(payload); err == nil {
+				c.Add(1)
+			}
 		}
 	}
 }

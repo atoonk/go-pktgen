@@ -25,7 +25,7 @@ func NewAFInetSyscallSender(dstIP net.IP, dstPort, payloadSize int) *AFInetSysca
 }
 
 // Send sends packets to the destination IP address
-func (s *AFInetSyscallSender) Send(ctx context.Context) error {
+func (s *AFInetSyscallSender) Send(ctx context.Context, c *Counter) error {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
 	if err != nil {
 		log.Fatalf("Failed to create socket: %v", err)
@@ -54,6 +54,7 @@ func (s *AFInetSyscallSender) Send(ctx context.Context) error {
 			if err != nil {
 				log.Fatalf("Failed to send packet: %v", err)
 			}
+			c.Add(1)
 		}
 	}
 }

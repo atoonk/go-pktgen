@@ -17,6 +17,7 @@ type PacketConfig struct {
 	SrcPort, DstPort layers.UDPPort
 	SrcMAC, DstMAC   net.HardwareAddr
 	PayloadSize      int
+	VlanID           int // 0 = untagged; >0 inserts an 802.1Q tag
 }
 
 func buildPayload(payloadSize int) []byte {
@@ -54,6 +55,15 @@ func WithUdpLayer(srcPort, dstPort int) PacketOption {
 	}
 }
 
+// WithVlanLayer inserts an 802.1Q VLAN tag with the given ID (0 = untagged, no
+// tag added). Only meaningful when an Ethernet layer is present.
+func WithVlanLayer(vlanID int) PacketOption {
+	return func(c *PacketConfig) error {
+		c.VlanID = vlanID
+		return nil
+	}
+}
+
 // WithPayloadSize sets the payload size for the packet.
 func WithPayloadSize(size int) PacketOption {
 	return func(c *PacketConfig) error {
@@ -80,14 +90,24 @@ func BuildPacket(c *PacketConfig) ([]byte, error) {
 	buf := gopacket.NewSerializeBuffer()
 	var layersToSerialize []gopacket.SerializableLayer
 
-	// Automatically include the Ethernet layer if MAC addresses are provided
+	// Automatically include the Ethernet layer if MAC addresses are provided.
+	// With a VLAN ID, the ethertype becomes 802.1Q and a Dot1Q tag carrying the
+	// inner IPv4 ethertype is inserted between Ethernet and IP.
 	if c.SrcMAC != nil && c.DstMAC != nil {
 		ethLayer := &layers.Ethernet{
 			SrcMAC:       c.SrcMAC,
 			DstMAC:       c.DstMAC,
 			EthernetType: layers.EthernetTypeIPv4,
 		}
-		layersToSerialize = append(layersToSerialize, ethLayer)
+		if c.VlanID > 0 {
+			ethLayer.EthernetType = layers.EthernetTypeDot1Q
+			layersToSerialize = append(layersToSerialize, ethLayer, &layers.Dot1Q{
+				VLANIdentifier: uint16(c.VlanID),
+				Type:           layers.EthernetTypeIPv4,
+			})
+		} else {
+			layersToSerialize = append(layersToSerialize, ethLayer)
+		}
 	}
 
 	// Set IP layer
