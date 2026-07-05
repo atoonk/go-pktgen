@@ -28,14 +28,23 @@ type AFXdpSender struct {
 	dstPort        uint16
 	payloadSize    int
 	vlanID         int
+	flows          int // distinct source ports to spread across the tx queues
 	srcMAC, dstMAC net.HardwareAddr
 }
 
-// NewAFXdpSender creates a new AFXdpSender with specified parameters
-func NewAFXdpSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr, queueID, vlanID int) *AFXdpSender {
+// NewAFXdpSender creates a new AFXdpSender with specified parameters. flows is
+// how many distinct source ports (5-tuples) to emit — it drives all tx queues
+// from one worker, so unlike the other senders it can't map --streams to
+// workers; instead it spreads `flows` source ports (srcPort..srcPort+flows-1)
+// across its queues.
+func NewAFXdpSender(iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr, queueID, vlanID, flows int) *AFXdpSender {
+	if flows < 1 {
+		flows = 1
+	}
 	return &AFXdpSender{
 		queueID:     queueID,
 		vlanID:      vlanID,
+		flows:       flows,
 		srcMAC:      srcMAC,
 		dstMAC:      dstMAC,
 		iface:       iface,
@@ -74,28 +83,37 @@ func (s *AFXdpSender) Send(ctx context.Context, c *Counter) error {
 	// veth); wait so we don't transmit into a down link.
 	waitLinkUpAFXdp(s.iface, 15*time.Second)
 
-	// Build the packet once, the same way the other senders do.
-	config, err := NewPacketConfig(
-		WithEthernetLayer(s.srcMAC, s.dstMAC),
-		WithVlanLayer(s.vlanID),
-		WithIpLayer(s.srcIP, s.dstIP),
-		WithUdpLayer(int(s.srcPort), int(s.dstPort)),
-		WithPayloadSize(s.payloadSize),
-	)
-	if err != nil {
-		return fmt.Errorf("error configuring packet: %v", err)
-	}
-	packet, err := BuildPacket(config)
-	if err != nil {
-		return fmt.Errorf("failed to build packet: %w", err)
+	// Build one packet per queue, assigning each queue a source port from the
+	// range srcPort..srcPort+flows-1 (round-robin: queue qi uses srcPort+qi%flows).
+	// Each distinct port is a distinct 5-tuple (flow), so the receiver's RSS
+	// spreads them across its rx queues instead of hashing everything to one core.
+	// This sender drives all TX queues from one worker, so --streams can't map to
+	// workers; `flows` (= --streams) controls how many source ports it emits.
+	// Building a packet per queue keeps the UDP checksum valid.
+	socks := fleet.Sockets()
+	packets := make([][]byte, len(socks))
+	for qi := range socks {
+		config, err := NewPacketConfig(
+			WithEthernetLayer(s.srcMAC, s.dstMAC),
+			WithVlanLayer(s.vlanID),
+			WithIpLayer(s.srcIP, s.dstIP),
+			WithUdpLayer(int(s.srcPort)+qi%s.flows, int(s.dstPort)),
+			WithPayloadSize(s.payloadSize),
+		)
+		if err != nil {
+			return fmt.Errorf("error configuring packet: %v", err)
+		}
+		if packets[qi], err = BuildPacket(config); err != nil {
+			return fmt.Errorf("failed to build packet: %w", err)
+		}
 	}
 
-	// One transmit goroutine per queue.
+	// One transmit goroutine per queue, each sending its own flow.
 	const batch = 256
 	var wg sync.WaitGroup
-	for _, xsk := range fleet.Sockets() {
+	for qi, xsk := range socks {
 		wg.Add(1)
-		go func(xsk *afxdp.Socket) {
+		go func(xsk *afxdp.Socket, packet []byte) {
 			defer wg.Done()
 			for {
 				select {
@@ -111,7 +129,7 @@ func (s *AFXdpSender) Send(ctx context.Context, c *Counter) error {
 				})
 				c.Add(uint64(n))
 			}
-		}(xsk)
+		}(xsk, packets[qi])
 	}
 	wg.Wait()
 	return nil

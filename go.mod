@@ -4,7 +4,6 @@ go 1.24.0
 
 require (
 	github.com/atoonk/go-afxdp v0.0.0-20260628053623-8d202ed6f573
-	github.com/cilium/ebpf v0.20.0
 	github.com/google/gopacket v1.1.19
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/spf13/cobra v1.8.0
@@ -14,6 +13,7 @@ require (
 )
 
 require (
+	github.com/cilium/ebpf v0.20.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-runewidth v0.0.9 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect

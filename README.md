@@ -8,29 +8,78 @@
 
 For more information, also see my blog here: [High-Speed Packet Transmission in Go: From net.Dial to AF_XDP](https://toonk.io/sending-network-packets-in-go/)
 
-The Go Packet Generator (`go-pktgen`) is a tool designed for network performance testing and stress testing. It demonstrates various methods of generating and sending packets in Go, allowing users to compare the performance differences between these methods. This tool supports direct `AF_PACKET` access, `AF_XDP`, raw sockets, high-level abstractions like `net.Conn`, and more.
+The Go Packet Generator (`go-pktgen`) is a tool designed for network performance testing and stress testing. It demonstrates various methods of generating and sending packets in Go, allowing users to compare the performance differences between these methods. This tool supports direct `AF_PACKET` access, `AF_XDP` (via [go-afxdp](https://github.com/atoonk/go-afxdp)), UDP GSO (`UDP_SEGMENT`), raw sockets, high-level abstractions like `net.Conn`, and more.
 
 ## Goal
-The primary goal of `go-pktgen` is to showcase different packet generation techniques in Go and to facilitate performance comparisons among these methods under various conditions. 
-Below is an example benchmark result comparing the performance of different packet-sending methods:
+The primary goal of `go-pktgen` is to showcase different packet generation techniques in Go and to facilitate performance comparisons among these methods under various conditions.
+
+Below is an example benchmark result comparing the methods over a veth pair
+(AMD EPYC 4244P @ 3.8GHz, 6 cores). It uses `--payloadsize 18`: 18 bytes of UDP
+payload + 14 (Ethernet) + 20 (IPv4) + 8 (UDP) is a 60-byte frame, which with the
+4-byte FCS is the classic 64-byte minimum-size Ethernet packet — the standard
+worst case for packets-per-second.
 
 ```
-./go-pktgen --dstip 192.168.64.2 --method benchmark --duration 5 --payloadsize 64 --iface veth0
+./go-pktgen --dstip 192.168.64.2 --method benchmark --duration 5 --payloadsize 18 --iface veth0
 +-------------+-----------+------+
 |   Method    | Packets/s | Mb/s |
 +-------------+-----------+------+
-| af_xdp      |   2620595 | 1341 |
-| af_packet   |   1159690 |  593 |
-| af_pcap     |   1037554 |  531 |
-| udp_syscall |    688522 |  352 |
-| raw_socket  |    643401 |  329 |
-| pkt_conn    |    606258 |  310 |
-| net_conn    |    354065 |  181 |
+| gso         |   1396318 |  670 |
+| af_xdp      |    736512 |  353 |
+| af_pcap     |    477484 |  229 |
+| af_packet   |    374134 |  179 |
+| raw_socket  |    191189 |   91 |
+| udp_syscall |    183244 |   87 |
+| pkt_conn    |    182323 |   87 |
+| net_conn    |    145383 |   69 |
 +-------------+-----------+------+
-
 ```
 
-The above was tested on an AMD EPYC 9124 @ 3.71GHz (16 cores)
+On a veth pair everything is a software path, so the winner is whoever spends
+the fewest CPU cycles per packet in the kernel — `gso` (one sendmsg carries 8
+packets), while `af_xdp` runs in copy mode and can't shine.
+
+**On a physical NIC, af_xdp is in a different league.** With a NIC that supports
+native XDP and zero-copy, af_xdp transmits straight from user-space memory into
+all TX queues, bypassing the kernel network stack entirely. Here is a 15-second
+run on a 10G ixgbe interface (the network is a VLAN, so we tag with `--vlan`
+and keep `--iface` on the physical NIC — that's what keeps XDP native):
+
+```
+./go-pktgen --method af_xdp --iface eno2 --vlan 2131 --srcip 192.168.0.1 --dstip 192.168.0.2 \
+  --dstmac 3c:ec:ef:b4:c2:dc --dstport 9999 --payloadsize 18 --streams 12 --duration 15
+13302952 packets/s (6385 Mb/s)
+13329780 packets/s (6398 Mb/s)
+13205180 packets/s (6338 Mb/s)
+13269492 packets/s (6369 Mb/s)
+```
+
+That's **13.3 million packets per second** — 18x the veth number, and the limit
+is the 10G wire, not the CPU. (For comparison on the same NIC: gso ~7.4M pps,
+af_packet ~5.1M pps.)
+
+**Why 13.3M pps shows as only ~6.4 Gb/s.** The Mb/s column counts
+application-level bytes: the frame go-pktgen builds (60 bytes here). The wire
+carries more per packet: +4 VLAN tag, +4 FCS, +8 preamble/SFD, +12 interframe
+gap = 88 bytes per packet on the wire. 13.3M pps x 88B x 8 = ~9.4 Gb/s of wire
+time — within ~7% of the 14.2M pps theoretical maximum for minimum-size tagged
+frames on 10G — even though the app-level figure reads 6.4 Gb/s. The smaller
+the packet, the bigger that gap; at 1500-byte frames the two numbers nearly
+converge.
+
+Note for benchmarking on such NICs: attaching an XDP program on ixgbe retrains
+the link for ~10 seconds, and the af_xdp method waits for link-up *inside* its
+measured window — short `--method benchmark` runs therefore understate af_xdp
+(a 5s run reports 0). Use a long `--duration`, or measure af_xdp standalone as
+above.
+
+If you're not interested in comparing methods and just want to send packets as
+fast as possible, have a look at the
+[blast example](https://github.com/atoonk/go-afxdp/tree/main/examples/blast) in
+the [go-afxdp](https://github.com/atoonk/go-afxdp) library: a minimal AF_XDP
+UDP flooder that drives every TX queue at line rate, sweeping the source port
+per packet so the traffic spreads across many flows (and the receiver's RSS
+queues). It's a good, small example of using the library directly.
 
 ## Getting Started
 
@@ -65,12 +114,14 @@ Flags:
       --duration int      Duration of the benchmark in seconds (default 5)
   -h, --help              help for pktgen
       --iface string      Interface to use (default "eth0")
-      --method string     method to use for sending packets [af_packet, net_conn, udp_syscall, raw_socket, af_pcap, pkt_conn, gso, benchmark] (default "af_packet")
+      --method string     method to use for sending packets [af_xdp, af_packet, net_conn, udp_syscall, raw_socket, af_pcap, pkt_conn, gso, benchmark] (default "af_packet")
       --payloadsize int   Size of the payload in bytes (default 100)
+      --segments int      GSO only: segments the kernel slices each sendmsg into (payloadsize*segments must be <= 65507) (default 8)
       --srcip string      Source IP address (default "192.168.64.1")
-      --srcmac string     Source MAC address (default "de:ad:be:ef:ca:fe")
-      --srcport int       Source UDP port (default 12345)
+      --srcmac string     Source MAC address (default: the --iface interface's real MAC)
+      --srcport int       Base source UDP port; with --streams, stream i uses srcport+i so each stream is a distinct flow (af_xdp varies it per TX queue; socket methods use kernel ephemeral ports) (default 12345)
       --streams int       Number of concurrent streams for sending packets (default 1)
+      --vlan int          802.1Q VLAN ID to tag frames with (0 = untagged; frame-building methods af_packet/af_pcap/af_xdp only). Use with --iface <physical> to run AF_XDP native instead of generic-on-vlan.
 ```
 
 Note that pktgen requires root privileges to run, as it needs to access raw sockets and network interfaces. 
@@ -86,6 +137,27 @@ packet generator sending UDP packets using `af_xdp`
 ```
 ./go-pktgen --dstip 192.168.64.2 --method af_xdp --duration 5 --payloadsize 1200 --streams 1  --iface veth0
 ```
+
+`af_xdp` is built on [go-afxdp](https://github.com/atoonk/go-afxdp): it attaches
+a no-op XDP program (enabling the driver's zero-copy TX path on capable NICs)
+and drives **all** TX queues from one worker, so `--streams` doesn't apply;
+instead it stamps `--streams` distinct source ports across its queues so the
+receiver's RSS spreads the load over its rx queues. On a physical NIC give it
+real addressing — for example, 10G line rate at 64-byte frames on ixgbe:
+```
+./go-pktgen --method af_xdp --iface eno2 --srcip 192.168.0.1 --dstip 192.168.0.2 \
+  --dstmac 3c:ec:ef:b4:c2:dc --dstport 9999 --payloadsize 64 --streams 12 --duration 30
+```
+To send on a VLAN, add `--vlan <id>` and keep `--iface` on the physical NIC:
+running on the `vlan.X` subinterface itself forces generic (slow) XDP.
+
+packet generator sending UDP packets using `gso` (UDP_SEGMENT: the kernel slices
+one 8·payloadsize sendmsg into 8 wire packets, cutting per-packet syscall cost)
+```
+./go-pktgen --dstip 192.168.64.2 --method gso --duration 5 --payloadsize 1200 --segments 8
+```
+`gso` goes through a normal UDP socket, so it needs no interface/MAC flags and
+the receiver must be reachable via the routing table.
 
 ## Benchmarking
 To compare the performance of different packet sending methods, use the benchmark method:

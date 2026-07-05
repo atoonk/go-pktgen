@@ -159,11 +159,6 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 
 	var resultsSlice []resultItem
 	// define the methods as a slice
-	// af_xdp now uses the github.com/atoonk/go-afxdp library (see pktgen/af_xdp.go).
-	// Only one AF_XDP method runs per benchmark: the kernel doesn't release an
-	// AF_XDP queue binding fast enough to bind a second one back-to-back, so
-	// af_xdp_zc is left out when af_xdp is present.
-	//
 	// af_xdp runs LAST: it attaches/detaches an XDP program (churning the queue
 	// binding), so keeping it at the end avoids that disturbing the methods that
 	// follow it.
@@ -177,22 +172,22 @@ func runBenchmark(ctx context.Context, ifaceName string, srcIPParsed, dstIPParse
 		for i := 0; i < streams; i++ {
 			wg.Add(1)
 			go func(streamNum int) {
+				// stream i is a distinct flow: source port srcPort+i (see runStream).
+				streamSrcPort := srcPort + (streamNum - 1)
 				var sender pktgen.Sender
 				switch TestType {
-				case "af_xdp_zc":
-					sender = pktgen.NewAFXdpZCSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, streamNum-1, vlan)
 				case "af_xdp":
-					sender = pktgen.NewAFXdpSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, streamNum-1, vlan)
+					sender = pktgen.NewAFXdpSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, streamNum-1, vlan, streams)
 				case "af_packet":
-					sender = pktgen.NewAFPacketSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, vlan)
+					sender = pktgen.NewAFPacketSender(ifaceName, srcIPParsed, dstIPParsed, streamSrcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, vlan)
 				case "net_conn":
 					sender = pktgen.NewNetConnSender(dstIPParsed, dstPort, payloadSize)
 				case "udp_syscall":
 					sender = pktgen.NewAFInetSyscallSender(dstIPParsed, dstPort, payloadSize)
 				case "raw_socket":
-					sender = pktgen.NewRawSocketSender(srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize)
+					sender = pktgen.NewRawSocketSender(srcIPParsed, dstIPParsed, streamSrcPort, dstPort, payloadSize)
 				case "af_pcap":
-					sender = pktgen.NewAFPcapSender(ifaceName, srcIPParsed, dstIPParsed, srcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, vlan)
+					sender = pktgen.NewAFPcapSender(ifaceName, srcIPParsed, dstIPParsed, streamSrcPort, dstPort, payloadSize, srcMACAddr, dstMACAddr, vlan)
 				case "pkt_conn":
 					sender = pktgen.NewBatchConnSender(dstIPParsed, dstPort, payloadSize)
 				case "gso":
@@ -320,24 +315,28 @@ func printStats(counter *pktgen.Counter, frameLen int, ctx context.Context) {
 }
 
 func runStream(ctx context.Context, method, iface string, srcIP, dstIP net.IP, srcPort, dstPort, payloadSize int, srcMAC, dstMAC net.HardwareAddr, duration, streamNum int, counter *pktgen.Counter) {
-	// Replicate the switch logic from your existing `main()`
-	// For example:
+	// Each stream is a distinct flow: stream i gets source port srcPort+i, so the
+	// receiver's RSS spreads streams across rx queues (destination port stays
+	// fixed so a dst-port filter still matches). The socket methods
+	// (net_conn/udp_syscall/pkt_conn/gso) already get a distinct kernel-assigned
+	// ephemeral source port per stream, so this only applies to the methods that
+	// stamp the port into a crafted frame. af_xdp drives all TX queues from one
+	// worker and varies the port per queue itself, so it takes the base srcPort.
+	streamSrcPort := srcPort + (streamNum - 1)
 	var sender pktgen.Sender
 	switch method {
 	case "af_pcap":
-		sender = pktgen.NewAFPcapSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, vlan)
+		sender = pktgen.NewAFPcapSender(iface, srcIP, dstIP, streamSrcPort, dstPort, payloadSize, srcMAC, dstMAC, vlan)
 	case "af_packet":
-		sender = pktgen.NewAFPacketSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, vlan)
-	case "af_xdp_zc":
-		sender = pktgen.NewAFXdpZCSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, streamNum-1, vlan)
+		sender = pktgen.NewAFPacketSender(iface, srcIP, dstIP, streamSrcPort, dstPort, payloadSize, srcMAC, dstMAC, vlan)
 	case "af_xdp":
-		sender = pktgen.NewAFXdpSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, streamNum-1, vlan)
+		sender = pktgen.NewAFXdpSender(iface, srcIP, dstIP, srcPort, dstPort, payloadSize, srcMAC, dstMAC, streamNum-1, vlan, streams)
 	case "net_conn":
 		sender = pktgen.NewNetConnSender(dstIP, dstPort, payloadSize)
 	case "udp_syscall":
 		sender = pktgen.NewAFInetSyscallSender(dstIP, dstPort, payloadSize)
 	case "raw_socket":
-		sender = pktgen.NewRawSocketSender(srcIP, dstIP, srcPort, dstPort, payloadSize)
+		sender = pktgen.NewRawSocketSender(srcIP, dstIP, streamSrcPort, dstPort, payloadSize)
 	case "pkt_conn":
 		sender = pktgen.NewBatchConnSender(dstIP, dstPort, payloadSize)
 	case "gso":
@@ -360,11 +359,11 @@ func setupSignalHandler(cancelFunc context.CancelFunc) {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&method, "method", "af_packet", "method to use for sending packets [af_xdp_zc, af_xdp, af_packet, net_conn, udp_syscall, raw_socket, af_pcap, pkt_conn, gso, benchmark]")
+	rootCmd.PersistentFlags().StringVar(&method, "method", "af_packet", "method to use for sending packets [af_xdp, af_packet, net_conn, udp_syscall, raw_socket, af_pcap, pkt_conn, gso, benchmark]")
 	rootCmd.PersistentFlags().StringVar(&iface, "iface", "eth0", "Interface to use")
 	rootCmd.PersistentFlags().StringVar(&srcIP, "srcip", "192.168.64.1", "Source IP address")
 	rootCmd.PersistentFlags().StringVar(&dstIP, "dstip", "192.168.64.2", "Destination IP address")
-	rootCmd.PersistentFlags().IntVar(&srcPort, "srcport", 12345, "Source UDP port")
+	rootCmd.PersistentFlags().IntVar(&srcPort, "srcport", 12345, "Base source UDP port; with --streams, stream i uses srcport+i so each stream is a distinct flow (af_xdp varies it per TX queue; socket methods use kernel ephemeral ports)")
 	rootCmd.PersistentFlags().IntVar(&dstPort, "dstport", 12345, "Destination UDP port")
 	rootCmd.PersistentFlags().IntVar(&payloadSize, "payloadsize", 100, "Size of the payload in bytes")
 	rootCmd.PersistentFlags().StringVar(&srcMAC, "srcmac", "de:ad:be:ef:ca:fe", "Source MAC address (default: the --iface interface's real MAC)")
@@ -372,7 +371,7 @@ func init() {
 	rootCmd.PersistentFlags().IntVar(&duration, "duration", 5, "Duration of the benchmark in seconds")
 	rootCmd.PersistentFlags().IntVar(&streams, "streams", 1, "Number of concurrent streams for sending packets")
 	rootCmd.PersistentFlags().IntVar(&gsoSegments, "segments", 8, "GSO only: segments the kernel slices each sendmsg into (payloadsize*segments must be <= 65507)")
-	rootCmd.PersistentFlags().IntVar(&vlan, "vlan", 0, "802.1Q VLAN ID to tag frames with (0 = untagged; frame-building methods af_packet/af_pcap/af_xdp[_zc] only). Use with --iface <physical> to run AF_XDP native instead of generic-on-vlan.")
+	rootCmd.PersistentFlags().IntVar(&vlan, "vlan", 0, "802.1Q VLAN ID to tag frames with (0 = untagged; frame-building methods af_packet/af_pcap/af_xdp only). Use with --iface <physical> to run AF_XDP native instead of generic-on-vlan.")
 
 }
 
